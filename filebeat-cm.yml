@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: filebeat-config
+  namespace: kube-system
+  labels:
+    k8s-app: filebeat
+    task: logging
+data:
+    filebeat.yml: |
+        filebeat.prospectors:
+        - input_type: log
+          paths:
+          - "/var/log/containers/*.log"
+          - "/var/log/startupscript.log"
+          - "/var/log/kubelet.log"
+          - "/var/log/kube-proxy.log"
+          - "/var/log/kube-apiserver.log"
+          - "/var/log/kube-controller-manager.log"
+          - "/var/log/kube-scheduler.log"
+          - "/var/log/rescheduler.log"
+          - "/var/log/glbc.log"
+          - "/var/log/cluster-autoscaler.log"
+          symlinks: true
+          json.message_key: log
+          json.keys_under_root: true
+          json.add_error_key: true
+          multiline.pattern: '^\s'
+          multiline.match: after
+          document_type: kube-logs
+        output.logstash:
+          hosts: ["logging-logstash.kube-system:5000"]
+        logging:
+          to_stderr: true
+          to_syslog: false
+          to_files: false

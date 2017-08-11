@@ -1,0 +1,111 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: logstash-config
+  namespace: kube-system
+  labels:
+    task: logging
+    k8s-app: logstash
+data:
+  logstash.yml: |
+    http.host: "0.0.0.0"
+    path.config: /usr/share/logstash/pipeline
+  pipeline.conf: "
+    input {
+      beats {
+      port => 5000
+      type => \"kube-logs\"
+      ssl => false
+      }
+    }
+
+    filter {
+      grok{
+        match=>{
+          \"source\"=>\"%{GREEDYDATA}/%{GREEDYDATA:app}-%{DATA}-%{DATA}_%{DATA:namespace}_%{GREEDYDATA}\"
+        }
+
+        add_tag=>[\"k8s-app-extracted\"]
+      }
+
+      if [app] == \"nginx-ingress-controller\" {\n
+        grok {
+          match=>{\n
+            \"log\"=>\"%{IP:real_ip} %{DATA:http_host} %{DATA:proxy_protocol_ip} %{DATA:remote_addr} - \\[%{DATA:forwarded_for}\\] - %{DATA:remote_user} \\[%{DATA:ingress_time}\\] \\\"%{WORD:verb} %{NOTSPACE:request} HTTP/%{NUMBER:http_version}\\\" %{NUMBER:result} %{NUMBER:bytes} \\\"%{DATA:referer}\\\" \\\"%{DATA:agent}\\\" %{DATA:request_length} %{DATA:request_time} \\[%{DATA:upstream}\\] %{DATA:upstream_addr} %{NUMBER:upstream_length} %{NUMBER:upstream_time} %{NUMBER:upstream_result}%{SPACE}%{WORD:request_id}\"
+          }\n
+
+          add_tag=>[\"ingress-access-log\"]\n
+        }
+
+        if \"ingress-access-log\" in [tags] {
+          mutate {
+            replace => { \"type\" => \"ingress-access\" }
+          }
+        }
+      }\n
+    }\n
+
+    output {\n
+      elasticsearch {\n
+        hosts => [\"logging-elasticsearch.kube-system:9200\"]\n
+        sniffing => false\n
+        manage_template => false\n
+        index => \"%{[type]}-%{+YYYY.MM.dd}\"\n
+        document_type => \"%{[@metadata][type]}\"\n
+      }\n
+    }\n"
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: logging-logstash
+  namespace: kube-system
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        task: logging
+        k8s-app: logstash
+    spec:
+      containers:
+      - name: logstash
+        image: schikin/logstash:5.5
+        imagePullPolicy: Always
+        volumeMounts:
+        - mountPath: /config
+          name: config
+        - mountPath: /pipeline
+          name: pipeline
+      volumes:
+      - name: config
+        configMap:
+          name: logstash-config
+          items:
+          - key: logstash.yml
+            path: logstash.yml
+      - name: pipeline
+        configMap:
+          name: logstash-config
+          items:
+          - key: pipeline.conf
+            path: pipeline.conf
+      securityContext:
+        fsGroup: 101
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    task: logging
+    kubernetes.io/name: logstash
+  name: logging-logstash
+  namespace: kube-system
+spec:
+  ports:
+  - port: 5000
+    targetPort: 5000
+    name: lumberjack
+  selector:
+    k8s-app: logstash
